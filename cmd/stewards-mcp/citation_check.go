@@ -108,7 +108,8 @@ func registerCitationCheckTool(srv *mcp.Server, pool *pgxpool.Pool) {
 			"The check is exact after whitespace/case/typographic-punctuation normalization — no fuzzy scoring. " +
 			"Returns {verified, found_at} on success; on a mismatch it returns the honest nearest region " +
 			"(nearest_section_ref, a verbatim excerpt of what the text ACTUALLY says, and overlap_chars — " +
-			"the real character count of the longest common substring). A mismatch is a finding, not a failure: " +
+			"the real character count of the longest common substring). Missing or ambiguous sections " +
+			"never verify via whole-document fallback. A mismatch is a finding, not a failure: " +
 			"record it. Read-only; deterministic; no model involved.",
 	}, makeCitationCheck(pool))
 }
@@ -231,13 +232,13 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		if !found {
 			if len(sections) == 0 {
 				notes = append(notes, fmt.Sprintf(
-					"doc has no sections recorded (run doc_split_sections first); section_ref %q could not be resolved — checked the whole document instead", in.SectionRef))
+					"doc has no sections recorded (run doc_split_sections first); section_ref %q could not be resolved — attribution unverified", in.SectionRef))
 			} else {
 				notes = append(notes, fmt.Sprintf(
-					"no section %q in this doc — checked the whole document instead", in.SectionRef))
+					"no section %q in this doc — attribution unverified", in.SectionRef))
 			}
-			scopes = append(scopes, span{"", 0, len(bodyRunes)})
-			out.Scope = "whole document (section_ref did not resolve)"
+			// A quote elsewhere cannot verify the requested section attribution.
+			out.Scope = fmt.Sprintf("unresolved section %q", in.SectionRef)
 		}
 
 	case in.Heading != "":
@@ -256,21 +257,21 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		case len(matched) > 1:
 			refs := make([]string, len(matched))
 			for i, s := range matched {
-				scopes = append(scopes, span{s.Ref, clamp(s.CharStart), clamp(s.CharEnd)})
 				refs[i] = s.Ref
 			}
-			out.Scope = fmt.Sprintf("%d sections matching heading %q (%s)", len(matched), in.Heading, strings.Join(refs, ", "))
-			notes = append(notes, "heading matched more than one section — each was checked; found_at names the one that verified")
+			// Ambiguous headings do not establish the location of a quote.
+			out.Scope = fmt.Sprintf("ambiguous heading %q (%s)", in.Heading, strings.Join(refs, ", "))
+			notes = append(notes, "heading matched multiple sections — attribution unverified; use an exact section_ref")
 		default:
 			if len(sections) == 0 {
 				notes = append(notes, fmt.Sprintf(
-					"doc has no sections recorded (run doc_split_sections first); heading %q could not be resolved — checked the whole document instead", in.Heading))
+					"doc has no sections recorded (run doc_split_sections first); heading %q could not be resolved — attribution unverified", in.Heading))
 			} else {
 				notes = append(notes, fmt.Sprintf(
-					"no section heading matches %q — checked the whole document instead", in.Heading))
+					"no section heading matches %q — attribution unverified", in.Heading))
 			}
-			scopes = append(scopes, span{"", 0, len(bodyRunes)})
-			out.Scope = "whole document (heading did not resolve)"
+			// A whole-document match cannot establish this heading attribution.
+			out.Scope = fmt.Sprintf("unresolved heading %q", in.Heading)
 		}
 
 	default:
@@ -289,7 +290,9 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		notes = append(notes, fmt.Sprintf("claimed quote is very long — matched on its first %d normalized characters", citationQuoteCap))
 	}
 
-	// Pass 1 — containment in each scope (exact after normalization).
+	// Pass 1 — containment in resolved scopes (exact after normalization).
+	// An unresolved or ambiguous citation has no candidate scopes: the
+	// diagnostic pass still runs, but cannot return verified=true.
 	for _, sc := range scopes {
 		normBody, offMap := normalizeCitationText(bodyRunes[sc.start:sc.end], sc.start)
 		if idx := indexRunes(normBody, normQuote); idx >= 0 {
