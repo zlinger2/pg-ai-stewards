@@ -13,6 +13,24 @@ Two read-only tools over the substrate's studies corpus:
 
 Future phases (3e.2-3e.5) add stewards_brain, stewards_work_item, gospel_passthrough, and outbound MCP-client capability for consuming external MCP servers like gospel-engine-v2.
 
+## Citation verification
+
+`citation_check` checks whether an entire quotation occurs in the cited
+document after case, whitespace and typographic punctuation normalization.
+A supplied `section_ref` must resolve. A heading must identify exactly one
+section. Missing, blank or ambiguous scopes return `verified: false` even
+when the quotation appears elsewhere in the document.
+
+`found_at` gives zero-based character offsets with an exclusive end.
+Nearest excerpts can help locate a mistaken attribution. Their overlap
+count describes shared text, and does not establish the requested attribution.
+Only the diagnostic scan is capped at 1,000 quote characters and 400,000
+document characters. Verification always compares the full quotation.
+
+A positive result establishes normalized textual presence in the requested
+scope. Assessing the source's reliability, the claim's truth and its relevance
+to an argument requires additional evidence and judgment.
+
 ## Seed memory (S1)
 
 A client that sees tool *names* only has no signal that the corpus might already hold an answer, so it answers from its own head and never calls `doc_search` — "an amnesia it didn't know it had." The seed kills that: at startup the server derives a compact overview of what the corpus holds (doc counts by kind, knowledge pools with their most-recent doc titles as semantic hooks, active intents, recent activity) and injects it through **both** channels that reach the client LLM:

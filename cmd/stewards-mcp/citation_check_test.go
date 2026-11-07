@@ -29,6 +29,7 @@ func TestCitationCheckScopeIntegrity(t *testing.T) {
 		{"missing section", CitationCheckInput{Quote: quote, SectionRef: "s9"}, sections, false, "unresolved section"},
 		{"missing section map", CitationCheckInput{Quote: quote, SectionRef: "s1"}, nil, false, "unresolved section"},
 		{"matching heading", CitationCheckInput{Quote: quote, Heading: "Alpha"}, sections, true, "section s1"},
+		{"blank heading", CitationCheckInput{Quote: quote, Heading: "  "}, sections[:1], false, "unresolved heading"},
 		{"missing heading", CitationCheckInput{Quote: quote, Heading: "Gamma"}, sections, false, "unresolved heading"},
 		{"missing heading map", CitationCheckInput{Quote: quote, Heading: "Alpha"}, nil, false, "unresolved heading"},
 		{"unscoped whole document", CitationCheckInput{Quote: quote}, sections, true, "whole document"},
@@ -55,6 +56,18 @@ func TestCitationCheckScopeIntegrity(t *testing.T) {
 	}
 }
 
+func TestCitationCheckNormalizedUnicodeOffsets(t *testing.T) {
+	body := "前書き 🌍\n“CAFÉ”\u00a0—\n\taccord"
+	quote := "\"café\" - accord"
+	got := checkCitation(CitationCheckInput{Quote: quote}, "fixture", body, nil)
+	if !got.Verified || got.FoundAt == nil {
+		t.Fatalf("normalized quote did not verify: %+v", got)
+	}
+	if got.FoundAt.CharStart != 6 || got.FoundAt.CharEnd != len([]rune(body)) {
+		t.Fatalf("incorrect character offsets: %+v", got.FoundAt)
+	}
+}
+
 func TestCitationCheckAmbiguousHeadingMustResolveExactSection(t *testing.T) {
 	body := "Policy: agreed text.\nPolicy addendum: other text."
 	split := strings.Index(body, "\n") + 1
@@ -68,5 +81,47 @@ func TestCitationCheckAmbiguousHeadingMustResolveExactSection(t *testing.T) {
 	}
 	if !strings.Contains(got.Scope, "ambiguous heading") || !strings.Contains(got.Note, "exact section_ref") {
 		t.Fatalf("missing actionable ambiguity report: %+v", got)
+	}
+}
+
+func TestCitationCheckVerifiesEntireLongQuote(t *testing.T) {
+	prefix := strings.Repeat("é", citationQuoteCap)
+	for _, tc := range []struct {
+		name  string
+		quote string
+		want  bool
+	}{
+		{"complete match", prefix + " actual ending", true},
+		{"invented ending", prefix + " invented ending", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "Intro. " + prefix + " actual ending"
+			got := checkCitation(CitationCheckInput{Quote: tc.quote}, "fixture", body, nil)
+			if got.Verified != tc.want {
+				t.Fatalf("verified=%v, want %v", got.Verified, tc.want)
+			}
+			if tc.want && (got.FoundAt == nil || got.FoundAt.CharEnd != len([]rune(body))) {
+				t.Fatalf("found_at must cover the entire quote: %+v", got.FoundAt)
+			}
+		})
+	}
+}
+
+func TestCitationCheckDiagnosticsDoNotDenyTextOutsideScope(t *testing.T) {
+	body := "Alpha: agreed text.\nBeta: other text."
+	split := strings.Index(body, "\n") + 1
+	sections := []citationSection{
+		{Ref: "s1", Heading: "Alpha", CharStart: 0, CharEnd: split},
+		{Ref: "s2", Heading: "Beta", CharStart: split, CharEnd: len([]rune(body))},
+	}
+	got := checkCitation(CitationCheckInput{Quote: "agreed text", SectionRef: "s2"}, "fixture", body, sections)
+	if got.Verified || got.FoundAt != nil {
+		t.Fatalf("wrong attribution verified: %+v", got)
+	}
+	if strings.Contains(got.Note, "does NOT appear") {
+		t.Fatalf("diagnostic denies text present in source: %q", got.Note)
+	}
+	if got.NearestSectionRef != "s1" || got.OverlapChars != len("agreed text") {
+		t.Fatalf("diagnostic did not locate the text: %+v", got)
 	}
 }

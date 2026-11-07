@@ -95,5 +95,6 @@ the resettable sandbox that is. Two halves consume it:
 
 `.github/workflows/ci.yml` runs exactly this smoke on every push to `main` and
 every pull request (the `extension` job), alongside `go build` + `go vet` (the
-`go` job). The Go test suites (`*_test.go` under `cmd/`) are run locally; wiring
-the ones that need a database into CI is a follow-up.
+`go` job), followed by `go test ./...`. The Go suites use local fixtures and
+test servers. Live database and model-dependent checks remain separate from
+that command.

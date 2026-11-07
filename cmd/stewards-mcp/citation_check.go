@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,7 +47,7 @@ import (
 // O(len(quote)*len(body)) locality scan is capped, and hitting a cap
 // is REPORTED in note, never silent.
 const (
-	citationQuoteCap = 1000   // normalized runes of the claimed quote used for matching
+	citationQuoteCap = 1000   // normalized quote runes used only for nearest-region diagnostics
 	citationBodyCap  = 400000 // normalized runes of body the LCS locality scan will walk
 	citationExcerpt  = 160    // runes of context on each side of the nearest region
 )
@@ -245,7 +246,7 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		want := strings.ToLower(strings.TrimSpace(in.Heading))
 		var matched []citationSection
 		for _, s := range sections {
-			if s.Heading != "" && strings.Contains(strings.ToLower(s.Heading), want) {
+			if want != "" && s.Heading != "" && strings.Contains(strings.ToLower(s.Heading), want) {
 				matched = append(matched, s)
 			}
 		}
@@ -285,10 +286,6 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		out.Note = "the claimed quote is empty after normalization"
 		return out
 	}
-	if len(normQuote) > citationQuoteCap {
-		normQuote = normQuote[:citationQuoteCap]
-		notes = append(notes, fmt.Sprintf("claimed quote is very long — matched on its first %d normalized characters", citationQuoteCap))
-	}
 
 	// Pass 1 — containment in resolved scopes (exact after normalization).
 	// An unresolved or ambiguous citation has no candidate scopes: the
@@ -314,6 +311,10 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 	// normalized body (a real overlap count, not a similarity score).
 	// Scanned over the WHOLE document (not just the scope) so a quote
 	// that lives in a different section than claimed is still located.
+	if len(normQuote) > citationQuoteCap {
+		normQuote = normQuote[:citationQuoteCap]
+		notes = append(notes, fmt.Sprintf("claimed quote is very long — the nearest-region scan used its first %d normalized characters; verification checks the entire quote", citationQuoteCap))
+	}
 	normBody, offMap := normalizeCitationText(bodyRunes, 0)
 	if len(normBody) > citationBodyCap {
 		normBody = normBody[:citationBodyCap]
@@ -329,9 +330,9 @@ func checkCitation(in CitationCheckInput, docSlug, body string, sections []citat
 		out.NearestSectionRef = sectionRefForOffset(sections, matchStart, "")
 		out.NearestExcerpt = excerptAround(bodyRunes, matchStart, matchEnd)
 		notes = append(notes, fmt.Sprintf(
-			"the claimed text does NOT appear; the closest region shares %d consecutive characters — read nearest_excerpt for what the text actually says", overlapLen))
+			"the requested citation could not be verified; the closest region shares %d consecutive characters — read nearest_excerpt for what the text actually says", overlapLen))
 	} else {
-		notes = append(notes, "the claimed text does not appear, and no part of it overlaps this doc at all")
+		notes = append(notes, "the requested citation could not be verified; the nearest-region scan found no overlapping text")
 	}
 	out.Note = joinCitationNotes(notes)
 	return out
@@ -389,26 +390,18 @@ func normalizeCitationText(runes []rune, baseOffset int) ([]rune, []int) {
 }
 
 // indexRunes returns the index of the first occurrence of needle in
-// hay, or -1. Plain scan — needles here are short quotes.
+// hay, or -1. Use the standard library's string search for long quotes,
+// then translate the byte position back to the rune-based offset map.
 func indexRunes(hay, needle []rune) int {
 	if len(needle) == 0 || len(needle) > len(hay) {
 		return -1
 	}
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i] != needle[0] {
-			continue
-		}
-		j := 1
-		for ; j < len(needle); j++ {
-			if hay[i+j] != needle[j] {
-				break
-			}
-		}
-		if j == len(needle) {
-			return i
-		}
+	text := string(hay)
+	idx := strings.Index(text, string(needle))
+	if idx < 0 {
+		return -1
 	}
-	return -1
+	return utf8.RuneCountInString(text[:idx])
 }
 
 // longestCommonSubstring returns (length, end-index-in-b-exclusive) of
